@@ -5,28 +5,41 @@ services:
 
     buildCommand: pip install -r requirements.txt
 
-    startCommand: python main.py
+    startCommand: python bot.py
 
     healthCheckPath: /health
 
     envVars:
+
+      - key: PYTHON_VERSION
+        value: 3.12.11
+
       - key: GEMINI_API_KEY
+        sync: false
+
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: ADMIN_ID
         sync: false
 
       - key: TELEGRAM_CHANNEL
         sync: false
+
+      - key: CONTENT_LANGUAGE
+        value: Hinglish
+
+      - key: GEMINI_TEXT_MODEL
+        value: gemini-3.6-flash
+
+      - key: GEMINI_IMAGE_MODEL
+        value: gemini-3.1-flash-image
 
       - key: POST_INTERVAL_HOURS
         value: "6"
 
       - key: DAILY_GENERATION_LIMIT
         value: "3"
-
-      - key: GEMINI_TEXT_MODEL
-        value: "gemini-2.5-flash"
-
-      - key: GEMINI_IMAGE_MODEL
-        value: "gemini-2.5-flash-image"
 
       - key: PORT
         value: "10000"
