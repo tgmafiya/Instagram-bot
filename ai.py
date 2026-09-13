@@ -11,58 +11,32 @@ from config import (
     GEMINI_API_KEY,
     TEXT_MODEL,
     IMAGE_MODEL,
-    TELEGRAM_CHANNEL,
     GENERATED_DIR,
-    HISTORY_FILE,
 )
+
+from storage import (
+    get_history,
+    add_history,
+    get_settings,
+)
+
 
 logger = logging.getLogger(__name__)
 
-if not GEMINI_API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY is missing."
-    )
 
 client = genai.Client(
     api_key=GEMINI_API_KEY
 )
 
 
-def load_history():
-    if not HISTORY_FILE.exists():
-        return []
-
-    try:
-        return json.loads(
-            HISTORY_FILE.read_text(
-                encoding="utf-8"
-            )
-        )
-    except Exception:
-        logger.exception(
-            "Could not read history.json"
-        )
-        return []
-
-
-def save_history(history):
-    HISTORY_FILE.write_text(
-        json.dumps(
-            history,
-            ensure_ascii=False,
-            indent=2
-        ),
-        encoding="utf-8"
-    )
-
-
-def make_id(text):
+def make_id(text: str) -> str:
     return hashlib.sha256(
         text.encode("utf-8")
-    ).hexdigest()[:16]
+    ).hexdigest()[:20]
 
 
-def clean_json(text):
+def clean_json(text: str) -> str:
+
     text = (text or "").strip()
 
     text = re.sub(
@@ -88,83 +62,106 @@ def clean_json(text):
 
 
 def generate_post():
-    history = load_history()
+    settings = get_settings()
+
+    history = get_history()
 
     recent_topics = [
-        item.get("topic", "")
-        for item in history[-20:]
-        if item.get("topic")
+        x.get("topic", "")
+        for x in history[-30:]
+        if x.get("topic")
     ]
 
+    channel = (
+        settings.get("telegram_channel")
+        or ""
+    )
+
     prompt = f"""
-You are an Indian Instagram content strategist.
+Create ONE original Instagram post concept
+for an Indian Gen-Z meme/entertainment page.
 
-Create ONE ORIGINAL Instagram post concept.
+Language:
+{settings.get("content_style", "Hinglish")}
 
-STYLE:
-- Hinglish
-- Gen-Z
-- funny
-- clever
-- meme-friendly
-- highly shareable
-- mild double-meaning humor is allowed
-- implication is okay
-- NOT explicit
+Requirements:
 
-SAFETY:
-- no nudity
-- no pornographic content
-- no sexual acts
-- no minors
-- no graphic sexual language
-- no hateful content
-- no harassment
-- no illegal instructions
-- no copied content
-- no copyrighted characters
-- no real person's likeness
+- Funny
+- Clever
+- Highly shareable
+- Short and memorable
+- Current social-media style
+- Mild double-meaning humor is allowed
+- The joke may have an implication that adults understand
+- It must remain non-explicit
+- No pornography
+- No nudity
+- No sexual acts
+- No explicit sexual descriptions
+- No minors
+- No hate
+- No harassment
+- No dangerous instructions
+- No copied viral caption
+- Do not imitate a specific creator
+- Do not use copyrighted characters
 
-PROMOTION:
-Naturally promote this Telegram channel:
-{TELEGRAM_CHANNEL}
+Telegram promotion:
 
-The promotion must not look like spam.
+{channel}
 
-Avoid these recently used topics:
+If the Telegram channel is empty,
+do not invent a channel.
+
+Avoid repeating these topics:
+
 {json.dumps(recent_topics, ensure_ascii=False)}
 
-Return ONLY valid JSON in this exact structure:
+Return ONLY valid JSON.
+
+Schema:
 
 {{
   "topic": "short topic",
-  "image_prompt": "detailed original image concept",
-  "caption": "Instagram caption",
-  "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+  "image_prompt": "original image concept",
+  "caption": "complete Instagram caption",
+  "hashtags": [
+    "#example1",
+    "#example2",
+    "#example3",
+    "#example4",
+    "#example5"
+  ]
 }}
 """
 
-    response = client.models.generate_content(
+    interaction = client.interactions.create(
         model=TEXT_MODEL,
-        contents=prompt
+        input=prompt,
+        generation_config={
+            "thinking_level": "low"
+        }
     )
 
     raw = clean_json(
-        getattr(response, "text", "")
+        interaction.output_text
     )
 
     if not raw:
         raise RuntimeError(
-            "Gemini returned an empty response."
+            "Gemini returned empty text."
         )
 
     try:
         data = json.loads(raw)
+
     except json.JSONDecodeError as exc:
+
         logger.error(
-            "Invalid Gemini JSON: %s",
+            "Gemini invalid JSON: %s",
             raw
         )
+
         raise RuntimeError(
             "Gemini returned invalid JSON."
         ) from exc
@@ -177,126 +174,114 @@ Return ONLY valid JSON in this exact structure:
     )
 
     for key in required:
+
         if key not in data:
             raise RuntimeError(
-                f"Missing Gemini field: {key}"
+                f"Missing field: {key}"
             )
 
-    if not isinstance(data["hashtags"], list):
+    if not isinstance(
+        data["hashtags"],
+        list
+    ):
         data["hashtags"] = []
 
     return data
 
 
-def generate_image(image_prompt, post_id):
-    prompt = f"""
-Create an ORIGINAL vertical Instagram social-media image.
+def generate_image(
+    image_prompt: str,
+    post_id: str
+):
 
-Visual style:
-- modern Indian meme/social-media aesthetic
+    prompt = f"""
+Create an ORIGINAL Instagram image.
+
+Format:
+- vertical social-media composition
 - visually attractive
+- modern Indian internet culture
 - funny
 - clever
+- meme-friendly
 - clean
-- high quality
-- suitable for general audiences
-- mild suggestive humor can be implied
-- NOT explicit
+- polished
 
-Do NOT include:
+The humor can be mildly suggestive or
+double-meaning, but the visual itself must
+remain suitable for a general audience.
+
+STRICTLY AVOID:
+
 - nudity
-- pornographic imagery
-- sexual acts
-- minors
+- pornography
+- explicit sexual activity
 - graphic sexual content
-- real people's likeness
+- minors in sexualized situations
+- real-person impersonation
 - copyrighted characters
-- copied brand logos
+- copied logos
+- hateful imagery
 
 Concept:
 
 {image_prompt}
 """
 
-    response = client.models.generate_content(
+    interaction = client.interactions.create(
         model=IMAGE_MODEL,
-        contents=prompt,
-        config={
-            "response_modalities": ["IMAGE"]
+        input=prompt,
+        response_format={
+            "type": "image",
+            "aspect_ratio": "4:5",
+            "image_size": "1K"
         }
     )
 
-    candidates = getattr(
-        response,
-        "candidates",
-        []
+    image = getattr(
+        interaction,
+        "output_image",
+        None
     )
 
-    for candidate in candidates:
-        content = getattr(
-            candidate,
-            "content",
-            None
+    if image is None:
+        raise RuntimeError(
+            "Gemini returned no image."
         )
 
-        if not content:
-            continue
+    data = image.data
 
-        parts = getattr(
-            content,
-            "parts",
-            []
-        )
+    if isinstance(data, str):
+        data = base64.b64decode(data)
 
-        for part in parts:
-            inline_data = getattr(
-                part,
-                "inline_data",
-                None
-            )
-
-            if not inline_data:
-                continue
-
-            image_data = inline_data.data
-
-            if isinstance(
-                image_data,
-                str
-            ):
-                image_data = base64.b64decode(
-                    image_data
-                )
-
-            output_path = (
-                GENERATED_DIR /
-                f"{post_id}.png"
-            )
-
-            output_path.write_bytes(
-                image_data
-            )
-
-            return output_path
-
-    raise RuntimeError(
-        "Gemini did not return an image."
+    output = (
+        GENERATED_DIR /
+        f"{post_id}.png"
     )
+
+    output.write_bytes(data)
+
+    return output
 
 
 def build_caption(data):
+
+    settings = get_settings()
+
     caption = str(
-        data.get("caption", "")
+        data.get(
+            "caption",
+            ""
+        )
     ).strip()
 
-    hashtags = data.get(
+    tags = []
+
+    for tag in data.get(
         "hashtags",
         []
-    )
+    ):
 
-    clean_tags = []
-
-    for tag in hashtags:
         tag = str(tag).strip()
 
         if not tag:
@@ -305,27 +290,34 @@ def build_caption(data):
         if not tag.startswith("#"):
             tag = "#" + tag
 
-        clean_tags.append(tag)
+        tags.append(tag)
 
-    promotion = ""
+    channel = (
+        settings.get(
+            "telegram_channel"
+        )
+        or ""
+    ).strip()
 
-    if TELEGRAM_CHANNEL:
-        promotion = (
-            f"\n\n🔥 More content: "
-            f"{TELEGRAM_CHANNEL}"
+    if channel:
+
+        caption += (
+            "\n\n🔥 More content: "
+            + channel
         )
 
-    result = (
-        caption
-        + promotion
-        + "\n\n"
-        + " ".join(clean_tags)
-    )
+    if tags:
 
-    return result.strip()
+        caption += (
+            "\n\n"
+            + " ".join(tags)
+        )
+
+    return caption.strip()
 
 
 def create_content():
+
     data = generate_post()
 
     fingerprint = (
@@ -334,16 +326,21 @@ def create_content():
         + data["caption"]
     )
 
-    post_id = make_id(fingerprint)
+    post_id = make_id(
+        fingerprint
+    )
 
-    history = load_history()
+    history = get_history()
 
-    if any(
+    duplicate = any(
         item.get("id") == post_id
         for item in history
-    ):
+    )
+
+    if duplicate:
+
         raise RuntimeError(
-            "Duplicate content detected."
+            "Duplicate post detected."
         )
 
     image_path = generate_image(
@@ -351,7 +348,9 @@ def create_content():
         post_id
     )
 
-    caption = build_caption(data)
+    caption = build_caption(
+        data
+    )
 
     record = {
         "id": post_id,
@@ -364,11 +363,6 @@ def create_content():
         "status": "generated"
     }
 
-    history.append(record)
-
-    # Keep the file small.
-    history = history[-100:]
-
-    save_history(history)
+    add_history(record)
 
     return record
