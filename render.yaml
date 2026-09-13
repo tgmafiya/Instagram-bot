@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: instagram-ai-bot
+    runtime: python
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: python main.py
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: TELEGRAM_CHANNEL
+        sync: false
+
+      - key: POST_INTERVAL_HOURS
+        value: "6"
+
+      - key: DAILY_GENERATION_LIMIT
+        value: "3"
+
+      - key: GEMINI_TEXT_MODEL
+        value: "gemini-2.5-flash"
+
+      - key: GEMINI_IMAGE_MODEL
+        value: "gemini-2.5-flash-image"
+
+      - key: PORT
+        value: "10000"
