@@ -1,27 +1,29 @@
-import base64
+import asyncio
 import hashlib
 import json
-import logging
+import os
 import re
-from datetime import datetime, timezone
+import uuid
 
 from google import genai
 
 from config import (
     GEMINI_API_KEY,
-    TEXT_MODEL,
-    IMAGE_MODEL,
-    GENERATED_DIR,
+    GEMINI_TEXT_MODEL,
+    GEMINI_IMAGE_MODEL,
+    CONTENT_LANGUAGE,
+    CONTENT_STYLE,
+    TELEGRAM_CHANNEL,
+    MEDIA_DIR,
 )
 
-from storage import (
-    get_history,
-    add_history,
-    get_settings,
-)
+from storage import find_duplicate
 
 
-logger = logging.getLogger(__name__)
+if not GEMINI_API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing."
+    )
 
 
 client = genai.Client(
@@ -29,340 +31,328 @@ client = genai.Client(
 )
 
 
-def make_id(text: str) -> str:
-    return hashlib.sha256(
-        text.encode("utf-8")
-    ).hexdigest()[:20]
+def clean_json_text(text: str) -> str:
+    text = text.strip()
 
+    if text.startswith("```"):
+        text = re.sub(
+            r"^```(?:json)?",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
 
-def clean_json(text: str) -> str:
-
-    text = (text or "").strip()
-
-    text = re.sub(
-        r"^```json\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = re.sub(
-        r"^```\s*",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
+        text = re.sub(
+            r"```$",
+            "",
+            text,
+        )
 
     return text.strip()
 
 
-def generate_post():
-    settings = get_settings()
+def extract_json(text: str):
+    text = clean_json_text(text)
 
-    history = get_history()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
 
-    recent_topics = [
-        x.get("topic", "")
-        for x in history[-30:]
-        if x.get("topic")
-    ]
+    start = text.find("{")
+    end = text.rfind("}")
 
-    channel = (
-        settings.get("telegram_channel")
-        or ""
+    if start >= 0 and end > start:
+        return json.loads(
+            text[start:end + 1]
+        )
+
+    raise ValueError(
+        "Gemini did not return valid JSON."
     )
 
+
+async def generate_content():
     prompt = f"""
-Create ONE original Instagram post concept
-for an Indian Gen-Z meme/entertainment page.
+You are the content strategist for an Instagram page.
+
+Create ONE original highly shareable Instagram post.
 
 Language:
-{settings.get("content_style", "Hinglish")}
+{CONTENT_LANGUAGE}
 
-Requirements:
+Style:
+{CONTENT_STYLE}
 
-- Funny
-- Clever
-- Highly shareable
-- Short and memorable
-- Current social-media style
-- Mild double-meaning humor is allowed
-- The joke may have an implication that adults understand
-- It must remain non-explicit
-- No pornography
-- No nudity
-- No sexual acts
-- No explicit sexual descriptions
-- No minors
-- No hate
-- No harassment
-- No dangerous instructions
-- No copied viral caption
-- Do not imitate a specific creator
-- Do not use copyrighted characters
+Telegram channel to promote:
+{TELEGRAM_CHANNEL}
 
-Telegram promotion:
+The content should feel:
+- modern
+- clever
+- humorous
+- highly relatable
+- Gen-Z friendly
+- curiosity-driven
+- premium
+- visually interesting
 
-{channel}
+A mild teasing/double-meaning tone is acceptable,
+but DO NOT create:
+- pornography
+- explicit sexual content
+- sexual acts
+- nudity
+- sexualized minors
+- hate
+- harassment
+- dangerous instructions
+- illegal instructions
+- copied captions
+- copyrighted character imitation
 
-If the Telegram channel is empty,
-do not invent a channel.
-
-Avoid repeating these topics:
-
-{json.dumps(recent_topics, ensure_ascii=False)}
+The post must NOT claim guaranteed virality.
 
 Return ONLY valid JSON.
 
-Schema:
+Required structure:
 
 {{
   "topic": "short topic",
-  "image_prompt": "original image concept",
+  "image_prompt": "detailed safe image generation prompt",
   "caption": "complete Instagram caption",
-  "hashtags": [
-    "#example1",
-    "#example2",
-    "#example3",
-    "#example4",
-    "#example5"
-  ]
+  "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
 }}
+
+Make the image prompt suitable for a vertical Instagram image.
+
+The image should be:
+- 4:5 portrait
+- social-media friendly
+- visually attractive
+- realistic or premium editorial style
+- no logos
+- no watermark
+- no readable text inside the image
 """
 
-    interaction = client.interactions.create(
-        model=TEXT_MODEL,
+    interaction = await asyncio.to_thread(
+        client.interactions.create,
+        model=GEMINI_TEXT_MODEL,
         input=prompt,
-        generation_config={
-            "thinking_level": "low"
-        }
     )
 
-    raw = clean_json(
-        interaction.output_text
+    text = getattr(
+        interaction,
+        "output_text",
+        None,
     )
 
-    if not raw:
+    if not text:
         raise RuntimeError(
-            "Gemini returned empty text."
+            "Gemini returned no text."
         )
 
-    try:
-        data = json.loads(raw)
+    data = extract_json(text)
 
-    except json.JSONDecodeError as exc:
+    topic = str(
+        data.get("topic", "")
+    ).strip()
 
-        logger.error(
-            "Gemini invalid JSON: %s",
-            raw
-        )
+    image_prompt = str(
+        data.get("image_prompt", "")
+    ).strip()
 
-        raise RuntimeError(
-            "Gemini returned invalid JSON."
-        ) from exc
+    caption = str(
+        data.get("caption", "")
+    ).strip()
 
-    required = (
-        "topic",
-        "image_prompt",
-        "caption",
-        "hashtags"
+    hashtags = data.get(
+        "hashtags",
+        [],
     )
 
-    for key in required:
+    if not topic:
+        raise RuntimeError(
+            "AI topic is empty."
+        )
 
-        if key not in data:
-            raise RuntimeError(
-                f"Missing field: {key}"
-            )
+    if not image_prompt:
+        raise RuntimeError(
+            "AI image prompt is empty."
+        )
+
+    if not caption:
+        raise RuntimeError(
+            "AI caption is empty."
+        )
 
     if not isinstance(
-        data["hashtags"],
-        list
+        hashtags,
+        list,
     ):
-        data["hashtags"] = []
+        hashtags = []
 
-    return data
+    hashtags = [
+        str(x).strip()
+        for x in hashtags
+        if str(x).strip()
+    ]
+
+    hashtags = hashtags[:15]
+
+    if TELEGRAM_CHANNEL:
+        caption += (
+            f"\n\n📲 More updates: {TELEGRAM_CHANNEL}"
+        )
+
+    if hashtags:
+        caption += (
+            "\n\n"
+            + " ".join(
+                h if h.startswith("#") else f"#{h}"
+                for h in hashtags
+            )
+        )
+
+    return {
+        "topic": topic,
+        "image_prompt": image_prompt,
+        "caption": caption,
+        "hashtags": hashtags,
+    }
 
 
-def generate_image(
+async def generate_image(
     image_prompt: str,
-    post_id: str
 ):
+    os.makedirs(
+        MEDIA_DIR,
+        exist_ok=True,
+    )
 
     prompt = f"""
-Create an ORIGINAL Instagram image.
+Create a high-quality Instagram portrait image.
 
-Format:
-- vertical social-media composition
-- visually attractive
-- modern Indian internet culture
-- funny
-- clever
-- meme-friendly
-- clean
-- polished
+Aspect ratio: 4:5.
 
-The humor can be mildly suggestive or
-double-meaning, but the visual itself must
-remain suitable for a general audience.
-
-STRICTLY AVOID:
-
-- nudity
-- pornography
-- explicit sexual activity
-- graphic sexual content
-- minors in sexualized situations
-- real-person impersonation
-- copyrighted characters
-- copied logos
-- hateful imagery
-
-Concept:
-
+Prompt:
 {image_prompt}
+
+Requirements:
+- safe for Instagram
+- no nudity
+- no explicit sexual content
+- no sexual acts
+- no minors
+- no copyrighted logos
+- no watermark
+- no visible text
+- polished professional composition
+- realistic social-media aesthetic
 """
 
-    interaction = client.interactions.create(
-        model=IMAGE_MODEL,
+    interaction = await asyncio.to_thread(
+        client.interactions.create,
+        model=GEMINI_IMAGE_MODEL,
         input=prompt,
         response_format={
             "type": "image",
             "aspect_ratio": "4:5",
-            "image_size": "1K"
-        }
+            "image_size": "1K",
+        },
     )
 
-    image = getattr(
+    output_image = getattr(
         interaction,
         "output_image",
-        None
+        None,
     )
 
-    if image is None:
+    if output_image is None:
         raise RuntimeError(
-            "Gemini returned no image."
+            "Gemini did not return an image."
         )
 
-    data = image.data
+    image_data = getattr(
+        output_image,
+        "data",
+        None,
+    )
 
-    if isinstance(data, str):
-        data = base64.b64decode(data)
+    if not image_data:
+        raise RuntimeError(
+            "Gemini image data is empty."
+        )
 
-    output = (
-        GENERATED_DIR /
+    post_id = uuid.uuid4().hex
+
+    filename = (
         f"{post_id}.png"
     )
 
-    output.write_bytes(data)
+    path = os.path.join(
+        MEDIA_DIR,
+        filename,
+    )
 
-    return output
-
-
-def build_caption(data):
-
-    settings = get_settings()
-
-    caption = str(
-        data.get(
-            "caption",
-            ""
-        )
-    ).strip()
-
-    tags = []
-
-    for tag in data.get(
-        "hashtags",
-        []
+    if isinstance(
+        image_data,
+        str,
     ):
+        import base64
 
-        tag = str(tag).strip()
-
-        if not tag:
-            continue
-
-        if not tag.startswith("#"):
-            tag = "#" + tag
-
-        tags.append(tag)
-
-    channel = (
-        settings.get(
-            "telegram_channel"
-        )
-        or ""
-    ).strip()
-
-    if channel:
-
-        caption += (
-            "\n\n🔥 More content: "
-            + channel
+        image_data = base64.b64decode(
+            image_data
         )
 
-    if tags:
+    with open(
+        path,
+        "wb",
+    ) as f:
+        f.write(image_data)
 
-        caption += (
-            "\n\n"
-            + " ".join(tags)
-        )
-
-    return caption.strip()
-
-
-def create_content():
-
-    data = generate_post()
-
-    fingerprint = (
-        data["topic"]
-        + "|"
-        + data["caption"]
-    )
-
-    post_id = make_id(
-        fingerprint
-    )
-
-    history = get_history()
-
-    duplicate = any(
-        item.get("id") == post_id
-        for item in history
-    )
-
-    if duplicate:
-
-        raise RuntimeError(
-            "Duplicate post detected."
-        )
-
-    image_path = generate_image(
-        data["image_prompt"],
-        post_id
-    )
-
-    caption = build_caption(
-        data
-    )
-
-    record = {
+    return {
         "id": post_id,
-        "topic": data["topic"],
-        "caption": caption,
-        "image": str(image_path),
-        "created_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
-        "status": "generated"
+        "filename": filename,
+        "path": path,
     }
 
-    add_history(record)
 
-    return record
+def content_hash(
+    topic,
+    caption,
+):
+    raw = (
+        topic.strip().lower()
+        + "|"
+        + caption.strip().lower()
+    )
+
+    return hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()
+
+
+async def generate_post():
+    content = await generate_content()
+
+    digest = content_hash(
+        content["topic"],
+        content["caption"],
+    )
+
+    if find_duplicate(digest):
+        raise RuntimeError(
+            "Duplicate content detected. "
+            "Generate again."
+        )
+
+    image = await generate_image(
+        content["image_prompt"]
+    )
+
+    content["content_hash"] = digest
+    content["image"] = image
+
+    return content
