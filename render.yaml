@@ -1,21 +1,16 @@
 services:
   - type: web
-    name: instagram-ai-bot
+    name: instagram-ai-publisher
     runtime: python
 
     buildCommand: pip install -r requirements.txt
-
     startCommand: python bot.py
 
     healthCheckPath: /health
 
     envVars:
-
       - key: PYTHON_VERSION
         value: 3.12.11
-
-      - key: GEMINI_API_KEY
-        sync: false
 
       - key: BOT_TOKEN
         sync: false
@@ -23,11 +18,29 @@ services:
       - key: ADMIN_ID
         sync: false
 
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: INSTAGRAM_ACCESS_TOKEN
+        sync: false
+
+      - key: INSTAGRAM_USER_ID
+        sync: false
+
+      - key: GRAPH_API_VERSION
+        value: v24.0
+
+      - key: PUBLIC_BASE_URL
+        sync: false
+
       - key: TELEGRAM_CHANNEL
         sync: false
 
       - key: CONTENT_LANGUAGE
         value: Hinglish
+
+      - key: CONTENT_STYLE
+        value: "funny, clever, premium, Gen-Z, slightly teasing"
 
       - key: GEMINI_TEXT_MODEL
         value: gemini-3.6-flash
@@ -38,7 +51,7 @@ services:
       - key: POST_INTERVAL_HOURS
         value: "6"
 
-      - key: DAILY_GENERATION_LIMIT
+      - key: DAILY_POST_LIMIT
         value: "3"
 
       - key: PORT
