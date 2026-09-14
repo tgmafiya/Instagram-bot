@@ -1,119 +1,158 @@
 import json
+import os
 import threading
-from pathlib import Path
+from datetime import datetime, timezone
 
-from config import (
-    HISTORY_FILE,
-    SETTINGS_FILE,
-)
+from config import DATA_DIR
 
 
-LOCK = threading.RLock()
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
+
+_lock = threading.Lock()
 
 
 DEFAULT_SETTINGS = {
-    "enabled": True,
+    "enabled": False,
     "interval_hours": 6,
     "daily_limit": 3,
     "telegram_channel": "",
-    "content_style": (
-        "funny, clever, Gen-Z, "
-        "mild double meaning but non-explicit"
-    ),
+    "content_style": "funny, clever, premium, Gen-Z, slightly teasing",
+    "last_post_at": None,
 }
 
 
-def _read_json(
-    path: Path,
-    default
-):
-    with LOCK:
+def ensure_files():
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-        if not path.exists():
-            return default
+    if not os.path.exists(SETTINGS_FILE):
+        save_json(SETTINGS_FILE, DEFAULT_SETTINGS.copy())
 
-        try:
-            return json.loads(
-                path.read_text(
-                    encoding="utf-8"
-                )
-            )
-
-        except Exception:
-            return default
+    if not os.path.exists(HISTORY_FILE):
+        save_json(HISTORY_FILE, [])
 
 
-def _write_json(
-    path: Path,
-    data
-):
-    with LOCK:
+def load_json(path, default):
+    ensure_parent = os.path.dirname(path)
 
-        temp = path.with_suffix(
-            path.suffix + ".tmp"
+    if ensure_parent:
+        os.makedirs(ensure_parent, exist_ok=True)
+
+    if not os.path.exists(path):
+        save_json(path, default)
+        return default
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    temp = path + ".tmp"
+
+    with open(temp, "w", encoding="utf-8") as f:
+        json.dump(
+            data,
+            f,
+            indent=2,
+            ensure_ascii=False,
         )
 
-        temp.write_text(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2
-            ),
-            encoding="utf-8"
-        )
-
-        temp.replace(path)
-
-
-def get_history():
-    return _read_json(
-        HISTORY_FILE,
-        []
-    )
-
-
-def save_history(history):
-    _write_json(
-        HISTORY_FILE,
-        history[-200:]
-    )
-
-
-def add_history(record):
-    history = get_history()
-
-    history.append(record)
-
-    save_history(history)
+    os.replace(temp, path)
 
 
 def get_settings():
-    settings = _read_json(
-        SETTINGS_FILE,
-        DEFAULT_SETTINGS.copy()
-    )
+    with _lock:
+        settings = load_json(
+            SETTINGS_FILE,
+            DEFAULT_SETTINGS.copy(),
+        )
 
-    merged = DEFAULT_SETTINGS.copy()
-    merged.update(settings)
+        changed = False
 
-    return merged
+        for key, value in DEFAULT_SETTINGS.items():
+            if key not in settings:
+                settings[key] = value
+                changed = True
 
+        if changed:
+            save_json(SETTINGS_FILE, settings)
 
-def save_settings(settings):
-    _write_json(
-        SETTINGS_FILE,
-        settings
-    )
+        return settings
 
 
 def update_settings(**kwargs):
+    with _lock:
+        settings = get_settings()
+
+        for key, value in kwargs.items():
+            if value is not None:
+                settings[key] = value
+
+        save_json(SETTINGS_FILE, settings)
+
+        return settings
+
+
+def get_history():
+    with _lock:
+        return load_json(HISTORY_FILE, [])
+
+
+def add_history(item):
+    with _lock:
+        history = load_json(HISTORY_FILE, [])
+
+        history.insert(0, item)
+
+        # Keep last 100 posts
+        history = history[:100]
+
+        save_json(HISTORY_FILE, history)
+
+        return history
+
+
+def posts_today():
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    history = get_history()
+
+    count = 0
+
+    for item in history:
+        created = item.get("created_at", "")
+
+        if created.startswith(today):
+            if item.get("published") is True:
+                count += 1
+
+    return count
+
+
+def can_post_today():
     settings = get_settings()
 
-    for key, value in kwargs.items():
+    return posts_today() < int(
+        settings.get("daily_limit", 3)
+    )
 
-        if value is not None:
-            settings[key] = value
 
-    save_settings(settings)
+def mark_last_post():
+    update_settings(
+        last_post_at=datetime.now(timezone.utc).isoformat()
+    )
 
-    return settings
+
+def find_duplicate(content_hash):
+    history = get_history()
+
+    for item in history:
+        if item.get("content_hash") == content_hash:
+            return True
+
+    return False
