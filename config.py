@@ -1,129 +1,80 @@
 import os
-from pathlib import Path
-
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
 
-DATA_DIR = BASE_DIR / "data"
-GENERATED_DIR = DATA_DIR / "generated"
-
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+def env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
 
 
-# =========================
-# REQUIRED
-# =========================
-
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY",
-    ""
-).strip()
-
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN",
-    ""
-).strip()
-
-ADMIN_ID = os.getenv(
-    "ADMIN_ID",
-    ""
-).strip()
+def env_int(name: str, default: int) -> int:
+    value = env(name, str(default))
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
-# =========================
-# CONTENT
-# =========================
+BOT_TOKEN = env("BOT_TOKEN")
+ADMIN_ID = env_int("ADMIN_ID", 0)
 
-TELEGRAM_CHANNEL = os.getenv(
-    "TELEGRAM_CHANNEL",
-    "@yourchannel"
-).strip()
+GEMINI_API_KEY = env("GEMINI_API_KEY")
 
-CONTENT_LANGUAGE = os.getenv(
-    "CONTENT_LANGUAGE",
-    "Hinglish"
-).strip()
-
-
-# =========================
-# GEMINI
-# =========================
-
-TEXT_MODEL = os.getenv(
+GEMINI_TEXT_MODEL = env(
     "GEMINI_TEXT_MODEL",
-    "gemini-3.6-flash"
-).strip()
+    "gemini-3.6-flash",
+)
 
-IMAGE_MODEL = os.getenv(
+GEMINI_IMAGE_MODEL = env(
     "GEMINI_IMAGE_MODEL",
-    "gemini-3.1-flash-image"
-).strip()
-
-
-# =========================
-# SCHEDULER
-# =========================
-
-POST_INTERVAL_HOURS = max(
-    1,
-    int(
-        os.getenv(
-            "POST_INTERVAL_HOURS",
-            "6"
-        )
-    )
+    "gemini-3.1-flash-image",
 )
 
-DAILY_GENERATION_LIMIT = max(
-    1,
-    int(
-        os.getenv(
-            "DAILY_GENERATION_LIMIT",
-            "3"
-        )
-    )
+# Instagram / Meta
+INSTAGRAM_ACCESS_TOKEN = env("INSTAGRAM_ACCESS_TOKEN")
+INSTAGRAM_USER_ID = env("INSTAGRAM_USER_ID")
+
+# Example: vXX.X
+GRAPH_API_VERSION = env(
+    "GRAPH_API_VERSION",
+    "v24.0",
 )
 
+# Public Render URL.
+# Example: https://instagram-ai-publisher.onrender.com
+PUBLIC_BASE_URL = env("PUBLIC_BASE_URL").rstrip("/")
 
-# =========================
-# SERVER
-# =========================
-
-PORT = int(
-    os.getenv(
-        "PORT",
-        "10000"
-    )
+# Telegram promotion
+TELEGRAM_CHANNEL = env(
+    "TELEGRAM_CHANNEL",
+    "@yourchannel",
 )
 
+CONTENT_LANGUAGE = env(
+    "CONTENT_LANGUAGE",
+    "Hinglish",
+)
 
-# =========================
-# FILES
-# =========================
+CONTENT_STYLE = env(
+    "CONTENT_STYLE",
+    "funny, clever, premium, Gen-Z, slightly teasing",
+)
 
-HISTORY_FILE = DATA_DIR / "history.json"
-SETTINGS_FILE = DATA_DIR / "settings.json"
+POST_INTERVAL_HOURS = env_int(
+    "POST_INTERVAL_HOURS",
+    6,
+)
 
+DAILY_POST_LIMIT = env_int(
+    "DAILY_POST_LIMIT",
+    3,
+)
 
-def validate_config():
-    missing = []
+PORT = env_int(
+    "PORT",
+    10000,
+)
 
-    if not GEMINI_API_KEY:
-        missing.append("GEMINI_API_KEY")
-
-    if not BOT_TOKEN:
-        missing.append("BOT_TOKEN")
-
-    if not ADMIN_ID:
-        missing.append("ADMIN_ID")
-
-    if missing:
-        raise RuntimeError(
-            "Missing environment variables: "
-            + ", ".join(missing)
-        )
+MEDIA_DIR = "data/media"
+DATA_DIR = "data"
